@@ -1,0 +1,48 @@
+---
+# ───────── Rutas locales ─────────
+state_dir: "{{ playbook_dir }}/.state"          # binarios, ISO, secretos de Talos, kubeconfig (gitignored)
+bin_dir: "{{ state_dir }}/bin"
+talos_dir: "{{ state_dir }}/talos"
+talosctl: "{{ bin_dir }}/talosctl"
+talosconfig: "{{ talos_dir }}/talosconfig"
+kubeconfig: "{{ state_dir }}/kubeconfig"
+
+# ───────── Talos ─────────
+talos_version: "v1.14.5"
+talos_arch: arm64                               # Apple Silicon -> guests arm64 con aceleración HVF
+talos_image_url: "https://github.com/siderolabs/talos/releases/download/{{ talos_version }}/metal-{{ talos_arch }}.raw.zst"
+talosctl_url: "https://github.com/siderolabs/talos/releases/download/{{ talos_version }}/talosctl-darwin-{{ talos_arch }}"
+cluster_name: talos-qemu
+
+# ───────── Red / QEMU ─────────
+# Sin root: NIC1 = user-mode (slirp, salida a Internet + port-forward host->VM),
+#           NIC2 = hub L2 UDP (L2 entre las VMs, IPs fijas 10.5.0.0/24).
+qemu_bin: /opt/homebrew/bin/qemu-system-aarch64
+qemu_img: /opt/homebrew/bin/qemu-img
+qemu_firmware: /opt/homebrew/share/qemu/edk2-aarch64-code.fd
+vm_dir: "{{ state_dir }}/vms"
+cluster_cidr_nodes: 10.5.0.0/24
+hub_port: 5555                                  # hub L2 UDP (scripts/l2hub.py); las VMs usan 5601+
+ingress_http_port: 8080                         # host:8080 -> NodePort 30080 de talos-w1
+ingress_https_port: 8443                        # host:8443 -> NodePort 30443 de talos-w1
+k8s_api_host_port: 6443                         # host:6443 -> kube-apiserver del control plane
+
+# ───────── Nodos ─────────
+disk_gb: 20
+nodes:
+  - { name: talos-cp1, role: controlplane, ip: 10.5.0.11, mac_user: "52:54:00:01:00:11", mac_lan: "52:54:00:05:00:11", lan_port: 5601, api_port: 50001, cpus: 2, memory: 4096 }
+  - { name: talos-w1,  role: worker,       ip: 10.5.0.21, mac_user: "52:54:00:01:00:21", mac_lan: "52:54:00:05:00:21", lan_port: 5602, api_port: 50002, cpus: 2, memory: 4096 }
+  - { name: talos-w2,  role: worker,       ip: 10.5.0.22, mac_user: "52:54:00:01:00:22", mac_lan: "52:54:00:05:00:22", lan_port: 5603, api_port: 50003, cpus: 2, memory: 4096 }
+controlplane: "{{ nodes | selectattr('role', 'eq', 'controlplane') | first }}"
+workers: "{{ nodes | selectattr('role', 'eq', 'worker') | list }}"
+
+# ───────── Servicios Kubernetes (Helm) ─────────
+services:
+  traefik: true
+  metrics_server: true
+  cert_manager: true
+  whoami: true
+chart_versions:        # vacío = última disponible; fija versiones para reproducibilidad
+  traefik: ""
+  metrics_server: ""
+  cert_manager: ""

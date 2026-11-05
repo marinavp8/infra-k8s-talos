@@ -1,0 +1,15 @@
+---
+- name: 1. QEMU - VMs de Talos (HVF, sin root)
+  hosts: localhost
+  gather_facts: false
+  roles: [{ role: qemu_vms, tags: [vms] }]
+
+- name: 2. Talos - configuración, bootstrap y kubeconfig
+  hosts: localhost
+  gather_facts: false
+  roles: [{ role: talos, tags: [talos] }]
+
+- name: 3. Servicios Kubernetes con Helm
+  hosts: localhost
+  gather_facts: false
+  roles: [{ role: k8s_services, tags: [services] }]

@@ -1,0 +1,65 @@
+---
+- name: Descargar talosctl {{ talos_version }}
+  ansible.builtin.get_url:
+    url: "{{ talosctl_url }}"
+    dest: "{{ talosctl }}"
+    mode: "0755"
+
+- name: Generar secretos y configuración base del cluster
+  ansible.builtin.command: >
+    {{ talosctl }} gen config {{ cluster_name }} https://{{ controlplane.ip }}:6443
+    --output-dir {{ talos_dir }} --install-disk /dev/vda
+    --additional-sans 127.0.0.1
+  args:
+    creates: "{{ talosconfig }}"
+
+- name: Generar configuración por nodo (parches con IP estática y subredes)
+  ansible.builtin.include_tasks: node_config.yml
+  loop: "{{ nodes }}"
+  loop_control:
+    loop_var: node
+    label: "{{ node.name }}"
+
+- name: Configurar endpoint de talosctl (port-forward al control plane)
+  ansible.builtin.command: >
+    {{ talosctl }} --talosconfig {{ talosconfig }} config endpoint 127.0.0.1:{{ controlplane.api_port }}
+  changed_when: false
+
+- name: Bootstrap de etcd (una sola vez)
+  ansible.builtin.include_tasks: bootstrap.yml
+
+- name: Obtener kubeconfig
+  ansible.builtin.command: >
+    {{ talosctl }} --talosconfig {{ talosconfig }} -n {{ controlplane.ip }}
+    kubeconfig {{ kubeconfig }} --force
+  changed_when: false
+
+- name: Apuntar kubeconfig al port-forward del host
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ kubeconfig }} config set-cluster {{ cluster_name }}
+    --server=https://127.0.0.1:{{ k8s_api_host_port }}
+  changed_when: false
+
+- name: Esperar a que el cluster esté sano (etcd, apiserver, nodos Ready)
+  ansible.builtin.command: >
+    {{ talosctl }} --talosconfig {{ talosconfig }} -n {{ controlplane.ip }}
+    health --control-plane-nodes {{ controlplane.ip }}
+    --worker-nodes {{ workers | map(attribute='ip') | join(',') }}
+    --wait-timeout 10m
+  changed_when: false
+  retries: 2
+  delay: 10
+  register: health
+  until: health.rc == 0
+
+- name: Flannel - forzar interfaz de la red entre nodos (si el DaemonSet aún no la lleva)
+  ansible.builtin.shell: |
+    if kubectl --kubeconfig {{ kubeconfig }} -n kube-system get ds kube-flannel -o jsonpath='{.spec.template.spec.containers[0].args}' | grep -q iface-regex; then
+      echo unchanged
+    else
+      kubectl --kubeconfig {{ kubeconfig }} -n kube-system patch ds kube-flannel --type=json \
+        -p '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--iface-regex=10\\.5\\.0\\..*"}]'
+      kubectl --kubeconfig {{ kubeconfig }} -n kube-system rollout status ds/kube-flannel --timeout=180s
+    fi
+  register: flannel_patch
+  changed_when: "'unchanged' not in flannel_patch.stdout"

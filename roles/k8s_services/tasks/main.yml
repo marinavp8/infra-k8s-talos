@@ -1,0 +1,96 @@
+---
+- name: Esperar a que todos los nodos estén Ready
+  ansible.builtin.command: kubectl --kubeconfig {{ kubeconfig }} wait --for=condition=Ready nodes --all --timeout=300s
+  changed_when: false
+
+- name: Añadir repositorios Helm
+  kubernetes.core.helm_repository:
+    name: "{{ item.name }}"
+    repo_url: "{{ item.url }}"
+  loop:
+    - { name: traefik, url: "https://traefik.github.io/charts" }
+    - { name: metrics-server, url: "https://kubernetes-sigs.github.io/metrics-server/" }
+    - { name: jetstack, url: "https://charts.jetstack.io" }
+
+# ── metrics-server (kubectl top / HPA) ──
+- name: metrics-server
+  when: services.metrics_server
+  kubernetes.core.helm:
+    kubeconfig: "{{ kubeconfig }}"
+    name: metrics-server
+    chart_ref: metrics-server/metrics-server
+    chart_version: "{{ chart_versions.metrics_server or omit }}"
+    release_namespace: kube-system
+    wait: true
+    values:
+      args:
+        - --kubelet-insecure-tls            # kubelets de Talos usan certificados autofirmados
+        - --kubelet-preferred-address-types=InternalIP
+
+# ── cert-manager + ClusterIssuer autofirmado ──
+- name: cert-manager
+  when: services.cert_manager
+  kubernetes.core.helm:
+    kubeconfig: "{{ kubeconfig }}"
+    name: cert-manager
+    chart_ref: jetstack/cert-manager
+    chart_version: "{{ chart_versions.cert_manager or omit }}"
+    release_namespace: cert-manager
+    create_namespace: true
+    wait: true
+    values:
+      crds:
+        enabled: true
+
+- name: ClusterIssuer autofirmado
+  when: services.cert_manager
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig }}"
+    state: present
+    template: clusterissuer.yaml.j2
+
+# ── Traefik (ingress) expuesto por NodePort -> host:8080/8443 ──
+- name: Namespace traefik
+  when: services.traefik
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig }}"
+    api_version: v1
+    kind: Namespace
+    name: traefik
+    state: present
+
+- name: traefik
+  when: services.traefik
+  kubernetes.core.helm:
+    kubeconfig: "{{ kubeconfig }}"
+    name: traefik
+    chart_ref: traefik/traefik
+    chart_version: "{{ chart_versions.traefik or omit }}"
+    release_namespace: traefik
+    wait: true
+    values:
+      service:
+        type: NodePort
+      ports:
+        web:
+          nodePort: 30080
+        websecure:
+          nodePort: 30443
+      providers:
+        kubernetesIngress:
+          publishedService:
+            enabled: false
+
+# ── Aplicación de prueba ──
+- name: whoami (Deployment + Service + Ingress)
+  when: services.whoami and services.traefik
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig }}"
+    state: present
+    template: whoami.yaml.j2
+
+- name: Resumen
+  ansible.builtin.debug:
+    msg:
+      - "export KUBECONFIG={{ kubeconfig }}"
+      - "curl -H 'Host: whoami.localhost' http://127.0.0.1:{{ ingress_http_port }}   # o http://whoami.localhost:{{ ingress_http_port }}"

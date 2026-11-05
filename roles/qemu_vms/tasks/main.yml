@@ -1,0 +1,39 @@
+---
+- name: Crear directorios de estado
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0700"
+  loop: ["{{ state_dir }}", "{{ bin_dir }}", "{{ talos_dir }}", "{{ vm_dir }}", "{{ state_dir }}/img"]
+
+- name: Descargar imagen de disco de Talos {{ talos_version }}
+  ansible.builtin.get_url:
+    url: "{{ talos_image_url }}"
+    dest: "{{ state_dir }}/img/metal-{{ talos_arch }}-{{ talos_version }}.raw.zst"
+    mode: "0644"
+
+- name: Descomprimir imagen (requiere zstd)
+  ansible.builtin.command: >
+    zstd -df {{ state_dir }}/img/metal-{{ talos_arch }}-{{ talos_version }}.raw.zst
+    -o {{ state_dir }}/img/metal-{{ talos_arch }}-{{ talos_version }}.raw
+  args:
+    creates: "{{ state_dir }}/img/metal-{{ talos_arch }}-{{ talos_version }}.raw"
+
+- name: ¿Hub L2 en ejecución?
+  ansible.builtin.shell: test -f {{ vm_dir }}/hub.pid && kill -0 "$(cat {{ vm_dir }}/hub.pid)"
+  register: hub_running
+  failed_when: false
+  changed_when: false
+
+- name: Arrancar hub L2 entre VMs
+  ansible.builtin.shell: >
+    nohup python3 {{ playbook_dir }}/scripts/l2hub.py {{ hub_port }} {{ nodes | map(attribute='lan_port') | join(' ') }}
+    > {{ vm_dir }}/hub.log 2>&1 & echo $! > {{ vm_dir }}/hub.pid
+  when: hub_running.rc != 0
+
+- name: Crear y arrancar VMs
+  ansible.builtin.include_tasks: vm.yml
+  loop: "{{ nodes }}"
+  loop_control:
+    loop_var: node
+    label: "{{ node.name }}"

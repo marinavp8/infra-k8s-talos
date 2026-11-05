@@ -1,0 +1,44 @@
+---
+- name: "{{ node.name }}: parche de nodo"
+  ansible.builtin.template:
+    src: node-patch.yaml.j2
+    dest: "{{ talos_dir }}/{{ node.name }}.patch.yaml"
+    mode: "0600"
+
+- name: "{{ node.name }}: machine config final"
+  ansible.builtin.command: >
+    {{ talosctl }} machineconfig patch {{ talos_dir }}/{{ node.role }}.yaml
+    --patch @{{ talos_dir }}/{{ node.name }}.patch.yaml
+    --output {{ talos_dir }}/{{ node.name }}.yaml
+  changed_when: false
+
+- name: "{{ node.name }}: ¿ya configurado? (API autenticada responde)"
+  ansible.builtin.command: >
+    {{ talosctl }} --talosconfig {{ talosconfig }}
+    -e 127.0.0.1:{{ node.api_port }} -n {{ node.ip }} version --short
+  register: node_ready
+  failed_when: false
+  changed_when: false
+
+- name: "{{ node.name }}: esperar al modo mantenimiento"
+  ansible.builtin.command: >
+    {{ talosctl }} get disks --insecure -n 127.0.0.1:{{ node.api_port }}
+  register: maint
+  until: maint.rc == 0
+  retries: 30
+  delay: 5
+  changed_when: false
+  when: node_ready.rc != 0
+
+- name: "{{ node.name }}: aplicar configuración"
+  ansible.builtin.command: >
+    {{ talosctl }} apply-config --insecure -n 127.0.0.1:{{ node.api_port }}
+    --file {{ talos_dir }}/{{ node.name }}.yaml
+  when: node_ready.rc != 0
+
+- name: "{{ node.name }}: reaplicar configuración (idempotente, nodo ya en el cluster)"
+  ansible.builtin.command: >
+    {{ talosctl }} --talosconfig {{ talosconfig }}
+    -e 127.0.0.1:{{ controlplane.api_port }} -n {{ node.ip }}
+    apply-config --file {{ talos_dir }}/{{ node.name }}.yaml
+  when: node_ready.rc == 0

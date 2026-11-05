@@ -1,0 +1,17 @@
+---
+- name: Destruir VMs de Talos (conserva descargas en .state/img y bin)
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Parar QEMU
+      ansible.builtin.shell: test -f {{ vm_dir }}/{{ item.name }}.pid && kill "$(cat {{ vm_dir }}/{{ item.name }}.pid)" || true
+      loop: "{{ nodes }}"
+      changed_when: false
+    - name: Parar hub L2
+      ansible.builtin.shell: test -f {{ vm_dir }}/hub.pid && kill "$(cat {{ vm_dir }}/hub.pid)" || true
+      changed_when: false
+    - name: Borrar discos, NVRAM, configs y secretos de Talos
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: ["{{ vm_dir }}", "{{ talos_dir }}", "{{ kubeconfig }}"]

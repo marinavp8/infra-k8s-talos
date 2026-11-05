@@ -1,0 +1,34 @@
+machine:
+  network:
+    interfaces:
+      - deviceSelector:
+          hardwareAddr: "{{ node.mac_lan }}"
+        dhcp: false
+        addresses:
+          - {{ node.ip }}/24
+{% if node.role == 'controlplane' %}
+cluster:
+  etcd:
+    advertisedSubnets:
+      - {{ cluster_cidr_nodes }}
+{% endif %}
+---
+apiVersion: v1alpha1
+kind: KubeNodeConfig
+nodeIP:
+  validSubnets:
+    - {{ cluster_cidr_nodes }}
+{% if node.role == 'controlplane' %}
+---
+apiVersion: v1alpha1
+kind: KubeFlannelCNIConfig
+backendType: vxlan
+extraArgs:
+  - --iface-regex=10\.5\.0\..*     # VXLAN por la red entre nodos, no por la NIC slirp (10.0.2.15 igual en todos)
+---
+apiVersion: v1alpha1
+kind: KubeProxyConfig
+config:
+  nodePortAddresses:
+    - 0.0.0.0/0                       # el port-forward del host llega por la NIC slirp, no por 10.5.0.x
+{% endif %}

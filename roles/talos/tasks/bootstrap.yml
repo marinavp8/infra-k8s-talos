@@ -1,0 +1,23 @@
+---
+- name: Esperar a que el control plane acepte la API autenticada
+  ansible.builtin.command: >
+    {{ talosctl }} --talosconfig {{ talosconfig }} -n {{ controlplane.ip }} version --short
+  register: cp_api
+  until: cp_api.rc == 0
+  retries: 40
+  delay: 6
+  changed_when: false
+
+- name: Bootstrap de etcd
+  ansible.builtin.command: >
+    {{ talosctl }} --talosconfig {{ talosconfig }} -n {{ controlplane.ip }} bootstrap
+  args:
+    creates: "{{ talos_dir }}/.bootstrapped"
+  register: bootstrap
+
+- name: Marcar bootstrap hecho
+  ansible.builtin.file:
+    path: "{{ talos_dir }}/.bootstrapped"
+    state: touch
+    mode: "0600"
+  when: bootstrap is changed

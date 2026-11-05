@@ -1,0 +1,68 @@
+---
+- name: "{{ node.name }}: disco qcow2 desde la imagen de Talos"
+  ansible.builtin.command: >
+    {{ qemu_img }} convert -f raw -O qcow2
+    {{ state_dir }}/img/metal-{{ talos_arch }}-{{ talos_version }}.raw {{ vm_dir }}/{{ node.name }}.qcow2
+  args:
+    creates: "{{ vm_dir }}/{{ node.name }}.qcow2"
+  register: disk_created
+
+- name: "{{ node.name }}: ampliar disco a {{ disk_gb }}G"
+  ansible.builtin.command: "{{ qemu_img }} resize {{ vm_dir }}/{{ node.name }}.qcow2 {{ disk_gb }}G"
+  when: disk_created is changed
+
+- name: "{{ node.name }}: variables UEFI (NVRAM)"
+  ansible.builtin.command: truncate -s 64m {{ vm_dir }}/{{ node.name }}-vars.fd
+  args:
+    creates: "{{ vm_dir }}/{{ node.name }}-vars.fd"
+
+- name: "{{ node.name }}: ¿está en ejecución?"
+  ansible.builtin.shell: test -f {{ vm_dir }}/{{ node.name }}.pid && kill -0 "$(cat {{ vm_dir }}/{{ node.name }}.pid)"
+  register: vm_running
+  failed_when: false
+  changed_when: false
+
+- name: "{{ node.name }}: arrancar QEMU (HVF, daemonizado)"
+  when: vm_running.rc != 0
+  vars:
+    fwd_extra: >-
+      {{ (',hostfwd=tcp:127.0.0.1:' ~ k8s_api_host_port ~ '-:6443') if node.role == 'controlplane' else '' }}
+      {{ (',hostfwd=tcp:127.0.0.1:' ~ ingress_http_port ~ '-:30080,hostfwd=tcp:127.0.0.1:' ~ ingress_https_port ~ '-:30443') if node.name == workers[0].name else '' }}
+  ansible.builtin.command:
+    argv:
+      - "{{ qemu_bin }}"
+      - -name
+      - "{{ node.name }}"
+      - -M
+      - virt,accel=hvf
+      - -cpu
+      - host
+      - -smp
+      - "{{ node.cpus }}"
+      - -m
+      - "{{ node.memory }}"
+      - -display
+      - none
+      - -daemonize
+      - -pidfile
+      - "{{ vm_dir }}/{{ node.name }}.pid"
+      - -serial
+      - "file:{{ vm_dir }}/{{ node.name }}.serial.log"
+      - -drive
+      - "if=pflash,format=raw,readonly=on,file={{ qemu_firmware }}"
+      - -drive
+      - "if=pflash,format=raw,file={{ vm_dir }}/{{ node.name }}-vars.fd"
+      - -drive
+      - "if=none,id=d0,format=qcow2,file={{ vm_dir }}/{{ node.name }}.qcow2"
+      - -device
+      - virtio-blk-pci,drive=d0
+      - -device
+      - virtio-rng-pci
+      - -netdev
+      - "user,id=n0,hostfwd=tcp:127.0.0.1:{{ node.api_port }}-:50000{{ fwd_extra | replace(' ', '') | replace('\n', '') }}"
+      - -device
+      - "virtio-net-pci,netdev=n0,mac={{ node.mac_user }}"
+      - -netdev
+      - "dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port={{ node.lan_port }},remote.type=inet,remote.host=127.0.0.1,remote.port={{ hub_port }}"
+      - -device
+      - "virtio-net-pci,netdev=n1,mac={{ node.mac_lan }}"
